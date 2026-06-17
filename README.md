@@ -1,1 +1,1 @@
-
+A fork of https://github.com/Lodactio/Extension-Summaryception repo, with some code from the https://github.com/Dogoo9/Extension-Summaryception fork. This SillyTavern extension integrates Summaryception with the Presence extension (https://github.com/leandrojofre/SillyTavern-Presence) allowing for presence-aware memory snippet generation.
