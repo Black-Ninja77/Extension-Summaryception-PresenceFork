@@ -41,10 +41,10 @@ Before using this extension, make sure you have:
 ## Installation
 
 1. Download or clone this repository.
-1a. Download or clone the **[SillyTavern-Presence](https://github.com/leandrojofre/SillyTavern-Presence)** extension.
-2. Place the extension folder into your SillyTavern extensions directory.
-3. Restart SillyTavern.
-4. Open the extension settings panel and enable Summaryception.
+2. Download or clone the **[SillyTavern-Presence](https://github.com/leandrojofre/SillyTavern-Presence)** extension.
+3. Place the extension folder into your SillyTavern extensions directory.
+4. Restart SillyTavern.
+5. Open the extension settings panel and enable Summaryception.
 
 If you are using local backends such as Ollama, LM Studio, or KoboldCPP, make sure the relevant endpoint is reachable and any required CORS configuration is set correctly.
 
