@@ -41,6 +41,7 @@ Before using this extension, make sure you have:
 ## Installation
 
 1. Download or clone this repository.
+1a. Download or clone the **[SillyTavern-Presence](https://github.com/leandrojofre/SillyTavern-Presence)** extension or else the integration will not work.
 2. Place the extension folder into your SillyTavern extensions directory.
 3. Restart SillyTavern.
 4. Open the extension settings panel and enable Summaryception.
