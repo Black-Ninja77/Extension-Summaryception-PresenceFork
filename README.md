@@ -1,8 +1,10 @@
 # Summaryception (Presence Fork)
 
-A SillyTavern extension that combines the original Summaryception recursive summarization flow with Presence-aware character memory handling for multi-character and group chats.
+- **[Summaryception](https://github.com/Lodactio/Extension-Summaryception)** (originally by Lodactio) — layered, recursive chat summarization that keeps thousands of turns of history in a few thousand tokens.
+- **[Extension-Summaryception](https://github.com/Dogoo9/Extension-Summaryception)** (fork by dogoo9) — adds per-character-card memory banks and a direct KoboldCPP connection on top of the original.
+- **[SillyTavern-Presence](https://github.com/leandrojofre/SillyTavern-Presence)** (by leandrojofre) — lets you manually (or automatically) control which characters are "present" in a group chat scene, hiding messages from characters who weren't there.
 
-This fork is designed for cases where you want the model to retain a compact, high-signal memory of each character's story arc without flooding the prompt with every raw turn.
+This fork sits on top of dogoo9's per-character branch and teaches it to read Presence's actual presence data instead of guessing. In a group chat, each character's memory bank now only ever contains summaries of the messages that character was genuinely present for.
 
 ## Why this fork exists
 
@@ -137,6 +139,10 @@ The extension can send summarization requests through several backends:
 
 This project is licensed under the AGPL-3.0 license.
 
-## Contributing
+## Credits
 
-If you want to improve this fork, feel free to open issues or submit pull requests. Please keep changes focused on compatibility, memory behavior, and documentation clarity.
+- **Lodactio** — created the original Summaryception and its layered summarization design.
+- **dogoo9** — forked it to add per-character-card memory banks and a direct KoboldCPP connection.
+- **leandrojofre** — created SillyTavern-Presence, the source of truth for per-message character presence that this fork reads from.
+
+This fork only adds the integration layer between the two; all credit for the underlying summarization engine and presence-tracking system goes to the projects above. If you find this useful, consider starring the upstream repos too.
