@@ -63,9 +63,10 @@ If you want the fork's character-specific behavior:
 
 - install and enable Presence
 - turn on the option labeled "Use Presence extension integration"
-- optionally enable "Separate memory per character card" if you want independent memory banks for different character cards in the same chat
+- enable "Separate memory per character card" to generate independent memory banks for different character cards in the same chat
 
 This helps keep the summary logic aligned with the active character context in group scenes.
+Note that this only applies to group chats.
 
 ## Configuration guide
 
