@@ -2269,22 +2269,20 @@ function updateInjection() {
 function onMessageReceived(messageIndex) {
     try {
         const { chat } = SillyTavern.getContext();
-        const msg = chat[messageIndex];
+        const msg = chat[messageIndex] || chat[chat.length - 1];
         if (msg && !msg.is_user && !msg.is_system) {
             const resolvedMessageKey = getCharacterMemoryKey(msg);
             log('New assistant message at index', messageIndex, 'resolved key', resolvedMessageKey);
+            if (resolvedMessageKey) {
+                setActiveCharacterOverride(resolvedMessageKey);
+            }
             setTimeout(async () => {
                 try {
-                    if (resolvedMessageKey) {
-                        setActiveCharacterOverride(resolvedMessageKey);
-                    }
                     await maybeSummarizeTurns();
                     updateInjection();
                     updateUI();
-                } finally {
-                    if (resolvedMessageKey) {
-                        clearActiveCharacterOverride();
-                    }
+                } catch (e) {
+                    log('onMessageReceived processing error:', e);
                 }
             }, 500);
         }
@@ -2295,6 +2293,7 @@ function onMessageReceived(messageIndex) {
 
 function onChatChanged() {
     log('Chat changed.');
+    clearActiveCharacterOverride();
     catchupDismissed = false;
     setTimeout(async () => {
         await activateCharacterMemoryStore();
