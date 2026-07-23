@@ -198,6 +198,13 @@ function log(...args) {
     if (getSettings().debugMode) console.log(LOG_PREFIX, ...args);
 }
 
+function cloneDefaultSettings() {
+    if (typeof structuredClone === 'function') {
+        return structuredClone(defaultSettings);
+    }
+    return JSON.parse(JSON.stringify(defaultSettings));
+}
+
 /**
  * Generates a simple 32-bit hash from a string.
  */
@@ -257,20 +264,33 @@ function debugVisibleTurns(chat, store) {
 }
 
 function getSettings() {
-    const { extensionSettings } = SillyTavern.getContext();
-    if (!extensionSettings[MODULE_NAME]) {
-        extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
+    const context = SillyTavern?.getContext?.();
+    if (!context) {
+        return cloneDefaultSettings();
     }
+
+    const { extensionSettings } = context;
+    if (!extensionSettings || typeof extensionSettings !== 'object') {
+        context.extensionSettings = {};
+    }
+
+    if (!context.extensionSettings[MODULE_NAME]) {
+        context.extensionSettings[MODULE_NAME] = cloneDefaultSettings();
+    }
+
     for (const key of Object.keys(defaultSettings)) {
-        if (!Object.hasOwn(extensionSettings[MODULE_NAME], key)) {
-            extensionSettings[MODULE_NAME][key] = defaultSettings[key];
+        if (!Object.hasOwn(context.extensionSettings[MODULE_NAME], key)) {
+            context.extensionSettings[MODULE_NAME][key] = defaultSettings[key];
         }
     }
-    return extensionSettings[MODULE_NAME];
+    return context.extensionSettings[MODULE_NAME];
 }
 
 function saveSettings() {
-    SillyTavern.getContext().saveSettingsDebounced();
+    const context = SillyTavern?.getContext?.();
+    if (context && typeof context.saveSettingsDebounced === 'function') {
+        context.saveSettingsDebounced();
+    }
 }
 
 function clearPersistentToast(toast) {
@@ -423,7 +443,43 @@ function getCharacterKeyFromCharacter(character, index = null) {
     return null;
 }
 
-function getCharacterMemoryKey() {
+function getCharacterKeyForMessage(msg) {
+    if (!msg || typeof msg !== 'object') return null;
+
+    const ctx = SillyTavern.getContext();
+    if (ctx.characters) {
+        for (const [idx, character] of Array.isArray(ctx.characters) ? ctx.characters.entries() : Object.entries(ctx.characters)) {
+            if (!character) continue;
+            if (speakerMatchesCharacter(msg.name, character, Number(idx))
+                || speakerMatchesCharacter(msg.avatar, character, Number(idx))
+                || speakerMatchesCharacter(msg.characterId, character, Number(idx))
+                || speakerMatchesCharacter(msg.chid, character, Number(idx))) {
+                const key = getCharacterKeyFromCharacter(character, Number(idx));
+                if (key) return key;
+            }
+        }
+    }
+
+    const presenceKeys = getMessagePresenceKeys(msg);
+    if (presenceKeys?.length) {
+        for (const key of presenceKeys) {
+            const candidate = resolveCharacterFromKey(`character:${key}`) || resolveCharacterFromKey(`character:${String(key).toLowerCase()}`);
+            if (candidate?.character) {
+                const resultKey = getCharacterKeyFromCharacter(candidate.character, candidate.index);
+                if (resultKey) return resultKey;
+            }
+        }
+    }
+
+    return null;
+}
+
+function getCharacterMemoryKey(msg = null) {
+    if (msg) {
+        const messageKey = getCharacterKeyForMessage(msg);
+        if (messageKey) return messageKey;
+    }
+
     if (activeCharacterOverrideKey) return activeCharacterOverrideKey;
 
     const ctx = SillyTavern.getContext();
@@ -444,29 +500,8 @@ function getCharacterMemoryKey() {
                 const m = chat[i];
                 if (!m || m.is_user) continue;
 
-                if (ctx.characters) {
-                    for (const [idx, character] of Array.isArray(ctx.characters) ? ctx.characters.entries() : Object.entries(ctx.characters)) {
-                        if (!character) continue;
-                        if (speakerMatchesCharacter(m.name, character, Number(idx))
-                            || speakerMatchesCharacter(m.avatar, character, Number(idx))
-                            || speakerMatchesCharacter(m.characterId, character, Number(idx))
-                            || speakerMatchesCharacter(m.chid, character, Number(idx))) {
-                            const key = getCharacterKeyFromCharacter(character, Number(idx));
-                            if (key) return key;
-                        }
-                    }
-                }
-
-                const presenceKeys = getMessagePresenceKeys(m);
-                if (presenceKeys?.length) {
-                    for (const key of presenceKeys) {
-                        const candidate = resolveCharacterFromKey(`character:${key}`) || resolveCharacterFromKey(`character:${String(key).toLowerCase()}`);
-                        if (candidate?.character) {
-                            const resultKey = getCharacterKeyFromCharacter(candidate.character, candidate.index);
-                            if (resultKey) return resultKey;
-                        }
-                    }
-                }
+                const key = getCharacterKeyForMessage(m);
+                if (key) return key;
                 break;
             }
         }
@@ -1394,7 +1429,11 @@ async function callSummarizer(storyTxt, contextStr, cacheHint = '', forceRefresh
     trace('>>> ENTERING callSummarizer');
 
     // ─── Cache Lookup ───
-    const { chatMetadata } = SillyTavern.getContext();
+    const context = SillyTavern?.getContext?.();
+    const chatMetadata = context?.chatMetadata || {};
+    if (!chatMetadata[MODULE_NAME]) {
+        chatMetadata[MODULE_NAME] = createEmptyChatStore();
+    }
     const root = chatMetadata[MODULE_NAME];
 
     // We use storyTxt and cacheHint (range/layer) but EXCLUDE contextStr from the hash.
@@ -1420,14 +1459,14 @@ async function callSummarizer(storyTxt, contextStr, cacheHint = '', forceRefresh
         enabled: s.enabled,
     });
 
-    const prompt = s.summarizerUserPrompt
+    const prompt = String(s.summarizerUserPrompt || '')
         .replace('{{player_name}}', getPlayerName())
         .replace('{{context_str}}', contextStr || '(none yet)')
-        .replace('{{story_txt}}', storyTxt);
+        .replace('{{story_txt}}', storyTxt || '');
 
     log('── Summarizer Call ──');
-    log('Context str length:', contextStr.length, 'chars');
-    log('Story txt length:', storyTxt.length, 'chars');
+    log('Context str length:', contextStr?.length ?? 0, 'chars');
+    log('Story txt length:', storyTxt?.length ?? 0, 'chars');
 
     const isDefaultMode = !s.connectionSource || s.connectionSource === 'default';
     const snapshot = isDefaultMode ? snapshotPromptToggles() : null;
@@ -2232,11 +2271,21 @@ function onMessageReceived(messageIndex) {
         const { chat } = SillyTavern.getContext();
         const msg = chat[messageIndex];
         if (msg && !msg.is_user && !msg.is_system) {
-            log('New assistant message at index', messageIndex);
+            const resolvedMessageKey = getCharacterMemoryKey(msg);
+            log('New assistant message at index', messageIndex, 'resolved key', resolvedMessageKey);
             setTimeout(async () => {
-                await maybeSummarizeTurns();
-                updateInjection();
-                updateUI();
+                try {
+                    if (resolvedMessageKey) {
+                        setActiveCharacterOverride(resolvedMessageKey);
+                    }
+                    await maybeSummarizeTurns();
+                    updateInjection();
+                    updateUI();
+                } finally {
+                    if (resolvedMessageKey) {
+                        clearActiveCharacterOverride();
+                    }
+                }
             }, 500);
         }
     } catch (e) {
