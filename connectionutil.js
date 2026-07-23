@@ -177,7 +177,7 @@ async function sendViaProfile(profileId, systemPrompt, userPrompt) {
         throw new ConnectionError(
             'ConnectionManagerRequestService is not available. ' +
             'Your SillyTavern version may be too old. Requires ST with PR #3603 (March 2025+).',
-                                  { retryable: false }
+            { retryable: false }
         );
     }
 
@@ -301,7 +301,7 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
             method: 'POST',
             headers: {
                 ...getProxyHeaders(),
-                               'Content-Type': 'application/json',
+                'Content-Type': 'application/json',
             },
             body: JSON.stringify({
                 model: model,
@@ -345,7 +345,7 @@ async function sendViaOllama(url, model, systemPrompt, userPrompt) {
         const errorText = await response.text().catch(() => 'Unknown error');
         throw new ConnectionError(
             `Ollama request failed (${response.status}): ${errorText}`,
-                                  { retryable: response.status >= 500, status: response.status }
+            { retryable: response.status >= 500, status: response.status }
         );
     }
 
@@ -482,7 +482,7 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
             response = await fetch(proxiedUrl(endpoint), {
                 method: 'POST',
                 headers: { ...getProxyHeaders(), ...headers },
-                                   body: body,
+                body: body,
             });
         } catch (proxyError) {
             console.warn(`${MODULE_NAME} CORS proxy failed for OpenAI endpoint, trying direct:`, proxyError.message);
@@ -532,12 +532,19 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
         }
         throw new ConnectionError(
             `OpenAI Compatible request failed (${response.status}): ${errorText}`,
-                                  { retryable: response.status >= 500 || response.status === 429, status: response.status }
+            { retryable: response.status >= 500 || response.status === 429, status: response.status }
         );
     }
 
     // ─── Stream reading ──────────────────────────────────────────
     // Read SSE chunks and assemble the full response content.
+    if (!response?.body || typeof response.body.getReader !== 'function') {
+        throw new ConnectionError(
+            'OpenAI Compatible endpoint did not return a readable streaming body.',
+            { retryable: true }
+        );
+    }
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullContent = '';
@@ -580,7 +587,7 @@ async function sendViaOpenAI(url, apiKey, model, systemPrompt, userPrompt, maxTo
     if (!fullContent.trim()) {
         throw new ConnectionError(
             'OpenAI Compatible endpoint returned an empty response (streaming).',
-                                  { retryable: true }
+            { retryable: true }
         );
     }
 
@@ -648,12 +655,12 @@ async function sendViaKoboldCPP(url, instructPrefix, instructSuffix, systemPromp
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            prompt:             fullPrompt,
-            max_tokens:         2000,
+            prompt: fullPrompt,
+            max_tokens: 2000,
             max_context_length: maxCtx,
-            temperature:        0.3,
-            top_p:              0.9,
-            frequency_penalty:  0.2,
+            temperature: 0.3,
+            top_p: 0.9,
+            frequency_penalty: 0.2,
             stop: ['<|im_end|>', '<|eot_id|>', '<|end|>', '<|im_start|>'],
         }),
     });
