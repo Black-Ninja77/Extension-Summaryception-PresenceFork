@@ -326,14 +326,34 @@ function normalizeChatStore(store) {
     return store;
 }
 
+// Keep a temporary character override for generation and summarization flows.
+// This lets the extension pin a bank to the current card without permanently
+// changing the chat-wide selection state.
 let activeCharacterOverrideKey = null;
+let activeCharacterOverrideEnabled = false;
 function setActiveCharacterOverride(key) {
     activeCharacterOverrideKey = key || null;
+    activeCharacterOverrideEnabled = Boolean(key);
 }
 function clearActiveCharacterOverride() {
     activeCharacterOverrideKey = null;
+    activeCharacterOverrideEnabled = false;
 }
 
+async function withTemporaryCharacterOverride(characterKey, callback) {
+    const previousKey = activeCharacterOverrideKey;
+    const previousEnabled = activeCharacterOverrideEnabled;
+    setActiveCharacterOverride(characterKey || null);
+    try {
+        return await callback();
+    } finally {
+        activeCharacterOverrideKey = previousKey;
+        activeCharacterOverrideEnabled = previousEnabled;
+    }
+}
+
+// Normalize character identities so matching works across ids, names, avatars,
+// and numeric indices from SillyTavern's context objects.
 function normalizeIdentityValue(value) {
     if (value === undefined || value === null) return null;
     return String(value).trim().toLowerCase();
@@ -399,6 +419,7 @@ function messageBelongsToCharacter(msg, character, index = null) {
     return keys.some(key => speakerMatchesCharacter(key, character, index));
 }
 
+// Resolve a stored character key back to the actual character object and its index.
 function resolveCharacterFromKey(key) {
     if (!key || typeof key !== 'string') return null;
     const prefix = 'character:';
@@ -433,6 +454,7 @@ function resolveCharacterFromKey(key) {
     return null;
 }
 
+// Create the canonical Summaryception key for a character object.
 function getCharacterKeyFromCharacter(character, index = null) {
     if (!character || typeof character !== 'object') return null;
     if (character.id !== undefined && character.id !== null && character.id !== '') return `character:${character.id}`;
@@ -440,6 +462,95 @@ function getCharacterKeyFromCharacter(character, index = null) {
     if (character.avatar) return `character:${character.avatar}`;
     if (character.name) return `character:${character.name}`;
     if (Number.isFinite(index)) return `character:${index}`;
+    return null;
+}
+
+// Build several equivalent key variants for a character so we can find an
+// existing memory bank even if SillyTavern exposes the identity under a slightly
+// different field or casing.
+function getCharacterKeyCandidates(character, index = null) {
+    const candidates = [];
+    const addCandidate = (value) => {
+        if (value === undefined || value === null || value === '') return;
+        const text = String(value).trim();
+        if (!text) return;
+        candidates.push(`character:${text}`);
+        const normalized = normalizeIdentityValue(text);
+        if (normalized && normalized !== text) candidates.push(`character:${normalized}`);
+    };
+
+    if (character && typeof character === 'object') {
+        addCandidate(character.id);
+        addCandidate(character.chid);
+        addCandidate(character.avatar);
+        addCandidate(character.name);
+    }
+    if (Number.isFinite(index)) addCandidate(index);
+
+    return candidates.filter((value, idx, arr) => arr.indexOf(value) === idx);
+}
+
+// Reuse an existing memory bank for a resolved character instead of creating a
+// duplicate bank under a slightly different key.
+function getExistingMemoryKeyForCharacter(character, index = null) {
+    const { chatMetadata } = SillyTavern.getContext();
+    const memoryRoot = chatMetadata?.[MODULE_NAME];
+    if (!memoryRoot?.memories || typeof memoryRoot.memories !== 'object') return null;
+
+    for (const key of getCharacterKeyCandidates(character, index)) {
+        if (memoryRoot.memories[key]) return key;
+    }
+
+    return null;
+}
+
+// Extract a character key from event payloads when SillyTavern passes the
+// active character through a generation or message event object.
+function getCharacterKeyFromPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+
+    const directCandidates = [
+        payload.characterId,
+        payload.chid,
+        payload.this_chid,
+        payload.character?.id,
+        payload.character?.chid,
+        payload.character?.avatar,
+        payload.character?.name,
+        payload.avatar,
+        payload.name,
+        payload.characterName,
+        payload.character_name,
+        payload.character_avatar,
+        payload.avatarUrl,
+        payload.id,
+    ].filter(v => v !== undefined && v !== null && v !== '');
+
+    for (const candidate of directCandidates) {
+        const normalized = String(candidate).trim();
+        if (!normalized) continue;
+
+        const ctx = SillyTavern.getContext();
+        if (ctx.characters) {
+            const resolved = resolveCharacterFromKey(`character:${normalized}`) || resolveCharacterFromKey(`character:${normalized.toLowerCase()}`);
+            if (resolved?.character) {
+                return getCharacterKeyFromCharacter(resolved.character, resolved.index);
+            }
+        }
+
+        if (normalized.startsWith('character:')) return normalized;
+        return `character:${normalized}`;
+    }
+
+    if (payload.character && typeof payload.character === 'object') {
+        const key = getCharacterKeyFromCharacter(payload.character);
+        if (key) return key;
+    }
+
+    if (payload.message && typeof payload.message === 'object') {
+        return getCharacterKeyForMessage(payload.message);
+    }
+
     return null;
 }
 
@@ -474,41 +585,50 @@ function getCharacterKeyForMessage(msg) {
     return null;
 }
 
-function getCharacterMemoryKey(msg = null) {
-    if (msg) {
-        const messageKey = getCharacterKeyForMessage(msg);
-        if (messageKey) return messageKey;
+// Determine the most relevant character for the current context before selecting
+// a memory bank. This prefers the live card context and reuses existing banks.
+function getCurrentContextCharacterKey(payload = null, options = {}) {
+    const ctx = SillyTavern.getContext();
+    const preferOverride = options.preferOverride !== false;
+
+    const payloadKey = getCharacterKeyFromPayload(payload);
+    if (payloadKey) {
+        const resolvedPayload = resolveCharacterFromKey(payloadKey);
+        const existingPayloadKey = getExistingMemoryKeyForCharacter(resolvedPayload?.character, resolvedPayload?.index) || payloadKey;
+        if (existingPayloadKey) return existingPayloadKey;
     }
 
-    if (activeCharacterOverrideKey) return activeCharacterOverrideKey;
+    if (preferOverride && activeCharacterOverrideEnabled && activeCharacterOverrideKey) return activeCharacterOverrideKey;
 
-    const ctx = SillyTavern.getContext();
+    const id = ctx.characterId ?? ctx.this_chid ?? ctx.chid;
+    if (id !== undefined && id !== null && id !== '') {
+        const existingIdKey = getExistingMemoryKeyForCharacter(ctx.character, null) || getExistingMemoryKeyForCharacter(ctx.characters?.[ctx.characterId], null);
+        if (existingIdKey) return existingIdKey;
+        return `character:${id}`;
+    }
+
+    const characterKey = getCharacterKeyFromCharacter(ctx.character);
+    if (characterKey) {
+        const existingCharacterKey = getExistingMemoryKeyForCharacter(ctx.character);
+        if (existingCharacterKey) return existingCharacterKey;
+        return characterKey;
+    }
+
     const groupId = ctx.groupId ?? ctx.selected_group;
     if (groupId) {
         const groupMemberIndex = ctx.groupCurrentMemberIndex;
         if (groupMemberIndex !== undefined && groupMemberIndex !== null) {
-            const memberChar = Array.isArray(ctx.characters) ? ctx.characters[groupMemberIndex] : ctx.characters?.[groupMemberIndex];
+            const memberChar = Array.isArray(ctx.characters)
+                ? ctx.characters[groupMemberIndex]
+                : ctx.characters?.[groupMemberIndex];
             if (memberChar) {
+                const existingMemberKey = getExistingMemoryKeyForCharacter(memberChar, groupMemberIndex);
+                if (existingMemberKey) return existingMemberKey;
                 const key = getCharacterKeyFromCharacter(memberChar, groupMemberIndex);
                 if (key) return key;
             }
         }
-
-        const chat = ctx.chat;
-        if (Array.isArray(chat)) {
-            for (let i = chat.length - 1; i >= 0; i--) {
-                const m = chat[i];
-                if (!m || m.is_user) continue;
-
-                const key = getCharacterKeyForMessage(m);
-                if (key) return key;
-                break;
-            }
-        }
     }
-
-    const id = ctx.characterId ?? ctx.this_chid ?? ctx.chid;
-    if (id !== undefined && id !== null && id !== '') return `character:${id}`;
 
     const candidate = ctx.character?.avatar
         || ctx.character?.name
@@ -516,7 +636,43 @@ function getCharacterMemoryKey(msg = null) {
         || ctx.characters?.[ctx.characterId]?.name
         || ctx.name2;
 
-    return candidate ? `character:${candidate}` : 'character:unknown';
+    if (candidate) {
+        const fallbackCharacter = ctx.character || ctx.characters?.[ctx.characterId] || null;
+        const existingCandidateKey = getExistingMemoryKeyForCharacter(fallbackCharacter, null);
+        if (existingCandidateKey) return existingCandidateKey;
+        return `character:${candidate}`;
+    }
+
+    const fallbackActiveKey = SillyTavern.getContext().chatMetadata?.[MODULE_NAME]?.activeMemoryKey;
+    return fallbackActiveKey || null;
+}
+
+// Return the active character key used for memory-bank selection.
+function getCharacterMemoryKey(msg = null) {
+    if (msg) {
+        const messageKey = getCharacterKeyForMessage(msg);
+        if (messageKey) return messageKey;
+    }
+
+    const contextualKey = getCurrentContextCharacterKey(null, { preferOverride: false });
+    if (contextualKey) return contextualKey;
+
+    if (activeCharacterOverrideEnabled && activeCharacterOverrideKey) return activeCharacterOverrideKey;
+
+    const ctx = SillyTavern.getContext();
+    const chat = ctx.chat;
+    if (Array.isArray(chat)) {
+        for (let i = chat.length - 1; i >= 0; i--) {
+            const m = chat[i];
+            if (!m || m.is_user || m.is_system) continue;
+
+            const key = getCharacterKeyForMessage(m);
+            if (key) return key;
+            break;
+        }
+    }
+
+    return 'character:unknown';
 }
 
 function getCharacterMemoryLabel() {
@@ -1607,64 +1763,66 @@ async function callSummarizer(storyTxt, contextStr, cacheHint = '', forceRefresh
 
 // ─── Core: Summarize Oldest Verbatim Turns ──────────────────────────
 
-async function maybeSummarizeTurns() {
-    const s = getSettings();
-    if (!s.enabled) return;
-    if (s.pauseSummarization) return;  // ← new
-    if (isSummarizing) return;
+async function maybeSummarizeTurns(characterKey = null) {
+    return withTemporaryCharacterOverride(characterKey, async () => {
+        const s = getSettings();
+        if (!s.enabled) return;
+        if (s.pauseSummarization) return;  // ← new
+        if (isSummarizing) return;
 
-    const { chat } = SillyTavern.getContext();
-    const store = getChatStore();
+        const { chat } = SillyTavern.getContext();
+        const store = getChatStore();
 
-    const allAssistantTurns = getAssistantTurns(chat);
-    const visibleTurns = getVisibleAssistantTurns(chat);
+        const allAssistantTurns = getAssistantTurns(chat);
+        const visibleTurns = getVisibleAssistantTurns(chat);
 
-    log(`Visible assistant turns: ${visibleTurns.length}, limit: ${s.verbatimTurns}`);
+        log(`Visible assistant turns: ${visibleTurns.length}, limit: ${s.verbatimTurns}`);
 
-    if (visibleTurns.length <= s.verbatimTurns) return;
+        if (visibleTurns.length <= s.verbatimTurns) return;
 
-    const overflow = visibleTurns.length - s.verbatimTurns;
+        const overflow = visibleTurns.length - s.verbatimTurns;
 
-    // ─── Backlog detection ───────────────────────────────────────
-    const backlogThreshold = s.turnsPerSummary * 2;
+        // ─── Backlog detection ───────────────────────────────────────
+        const backlogThreshold = s.turnsPerSummary * 2;
 
-    if (overflow > backlogThreshold && !catchupDismissed) {
-        log(`Large backlog detected: ${overflow} turns over limit`);
+        if (overflow > backlogThreshold && !catchupDismissed) {
+            log(`Large backlog detected: ${overflow} turns over limit`);
 
-        const batchesNeeded = Math.ceil(overflow / s.turnsPerSummary);
-        const choice = await showCatchupDialog(overflow, batchesNeeded);
+            const batchesNeeded = Math.ceil(overflow / s.turnsPerSummary);
+            const choice = await showCatchupDialog(overflow, batchesNeeded);
 
-        if (choice === 'skip') {
-            const cutoff = visibleTurns[visibleTurns.length - s.verbatimTurns - 1];
-            if (cutoff) {
-                store.summarizedUpTo = cutoff.index;
-                log(`Skipped backlog. summarizedUpTo set to ${store.summarizedUpTo}`);
+            if (choice === 'skip') {
+                const cutoff = visibleTurns[visibleTurns.length - s.verbatimTurns - 1];
+                if (cutoff) {
+                    store.summarizedUpTo = cutoff.index;
+                    log(`Skipped backlog. summarizedUpTo set to ${store.summarizedUpTo}`);
+                }
+                catchupDismissed = true;
+                await saveChatStore();
+                return;
+            } else if (choice === 'catchup') {
+                await runCatchup(visibleTurns, overflow);
+                return;
+            } else if (choice === 'partial') {
+                await summarizeOneBatch(visibleTurns);
+                return;
             }
-            catchupDismissed = true;
-            await saveChatStore();
-            return;
-        } else if (choice === 'catchup') {
-            await runCatchup(visibleTurns, overflow);
-            return;
-        } else if (choice === 'partial') {
-            await summarizeOneBatch(visibleTurns);
             return;
         }
-        return;
-    }
 
-    // ─── Normal operation: single batch ──────────────────────────
-    const success = await summarizeOneBatch(visibleTurns);
+        // ─── Normal operation: single batch ──────────────────────────
+        const success = await summarizeOneBatch(visibleTurns);
 
-    if (!success) {
-        log('Batch failed, stopping summarization cycle to avoid retry loop.');
-        return;
-    }
+        if (!success) {
+            log('Batch failed, stopping summarization cycle to avoid retry loop.');
+            return;
+        }
 
-    const remaining = getVisibleAssistantTurns(chat);
-    if (remaining.length > s.verbatimTurns && remaining.length - s.verbatimTurns <= backlogThreshold) {
-        await maybeSummarizeTurns();
-    }
+        const remaining = getVisibleAssistantTurns(chat);
+        if (remaining.length > s.verbatimTurns && remaining.length - s.verbatimTurns <= backlogThreshold) {
+            await maybeSummarizeTurns();
+        }
+    });
 }
 
 // ─── Core: Single Batch Summarization ────────────────────────────────
@@ -2303,13 +2461,11 @@ function onMessageReceived(messageIndex) {
 
             setTimeout(async () => {
                 try {
-                    await maybeSummarizeTurns();
+                    await maybeSummarizeTurns(resolvedMessageKey);
                     updateInjection();
                     updateUI();
                 } catch (e) {
                     log('onMessageReceived processing error:', e);
-                } finally {
-                    clearActiveCharacterOverride();
                 }
             }, 250);
         };
@@ -2331,8 +2487,18 @@ function onChatChanged() {
     }, 100);
 }
 
-function onGenerationStarted() {
-    updateInjection();
+function onGenerationStarted(...args) {
+    try {
+        const payload = args?.[0] || null;
+        const generationKey = getCurrentContextCharacterKey(payload, { preferOverride: false });
+        if (generationKey && generationKey !== 'character:unknown') {
+            setActiveCharacterOverride(generationKey);
+        }
+        updateInjection();
+        updateUI();
+    } catch (e) {
+        log('onGenerationStarted error:', e);
+    }
 }
 
 // ─── Slash Commands ──────────────────────────────────────────────────
