@@ -2268,14 +2268,39 @@ function updateInjection() {
 
 function onMessageReceived(messageIndex) {
     try {
-        const { chat } = SillyTavern.getContext();
-        const msg = chat[messageIndex] || chat[chat.length - 1];
-        if (msg && !msg.is_user && !msg.is_system) {
-            const resolvedMessageKey = getCharacterMemoryKey(msg);
+        let attempts = 0;
+        const maxAttempts = 8;
+        const retryDelayMs = 120;
+        const startLength = SillyTavern.getContext().chat?.length ?? 0;
+
+        const resolveAndProcess = () => {
+            const { chat } = SillyTavern.getContext();
+            let msg = null;
+
+            if (Number.isInteger(messageIndex) && chat?.[messageIndex]) {
+                msg = chat[messageIndex];
+            } else if (chat?.length && chat.length > startLength) {
+                msg = chat[chat.length - 1];
+            }
+
+            if (!msg || msg.is_user || msg.is_system) {
+                if (attempts < maxAttempts) {
+                    attempts++;
+                    setTimeout(resolveAndProcess, retryDelayMs);
+                    return;
+                }
+                clearActiveCharacterOverride();
+                return;
+            }
+
+            const resolvedMessageKey = getCharacterKeyForMessage(msg) || getCharacterMemoryKey(msg);
             log('New assistant message at index', messageIndex, 'resolved key', resolvedMessageKey);
             if (resolvedMessageKey) {
                 setActiveCharacterOverride(resolvedMessageKey);
+            } else {
+                clearActiveCharacterOverride();
             }
+
             setTimeout(async () => {
                 try {
                     await maybeSummarizeTurns();
@@ -2283,9 +2308,13 @@ function onMessageReceived(messageIndex) {
                     updateUI();
                 } catch (e) {
                     log('onMessageReceived processing error:', e);
+                } finally {
+                    clearActiveCharacterOverride();
                 }
-            }, 500);
-        }
+            }, 250);
+        };
+
+        resolveAndProcess();
     } catch (e) {
         log('onMessageReceived error:', e);
     }
